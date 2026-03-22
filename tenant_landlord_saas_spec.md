@@ -180,7 +180,7 @@ Landlords:
 3. Auth pages
 4. Dashboard
 5. Properties
-6. Issues list
+5. Issues list
 7. Create issue form
 8. Image upload
 9. Status update UI
@@ -229,3 +229,167 @@ Landlords:
 
 ## Goal
 Build fast, launch early, get first paying users.
+
+---
+
+# 13. Spring Boot Backend Architecture
+
+## Libraries & Dependencies
+
+### Core
+- spring-boot-starter-web
+- spring-boot-starter-data-jpa
+- spring-boot-starter-security
+- spring-boot-starter-validation
+
+### Database
+- postgresql driver
+
+### Authentication
+- jjwt (JWT)
+
+### Email
+- spring-boot-starter-mail
+
+### Optional
+- Lombok
+- MapStruct
+
+---
+
+## Folder Structure
+
+```
+com.yourapp
+│
+├── config
+├── auth
+├── user
+├── property
+├── issue
+├── notification
+├── common
+└── TenantLandlordApplication.java
+```
+
+---
+
+## Module Structure
+
+### auth
+```
+auth/
+├── controller/
+├── service/
+├── dto/
+├── security/
+└── util/
+```
+
+### user
+```
+user/
+├── entity/
+├── repository/
+├── service/
+└── controller/
+```
+
+### property
+```
+property/
+├── entity/
+├── repository/
+├── service/
+├── controller/
+└── dto/
+```
+
+### issue
+```
+issue/
+├── entity/
+├── repository/
+├── service/
+├── controller/
+├── dto/
+└── enums/
+```
+
+### notification
+```
+notification/
+├── service/
+├── email/
+└── dto/
+```
+
+### config
+```
+config/
+├── SecurityConfig.java
+├── JwtFilter.java
+├── WebConfig.java
+```
+
+### common
+```
+common/
+├── exception/
+├── response/
+├── util/
+```
+
+---
+
+## Example Entity
+
+```java
+@Entity
+public class Issue {
+
+    @Id
+    @GeneratedValue
+    private Long id;
+
+    private String title;
+    private String description;
+
+    @Enumerated(EnumType.STRING)
+    private IssueStatus status;
+
+    @ManyToOne
+    private Property property;
+
+    @ManyToOne
+    private User tenant;
+
+    private LocalDateTime createdAt;
+}
+```
+
+---
+
+## Security Flow
+
+Login → Generate JWT → Client stores token → Requests include token → Backend validates via filter
+
+---
+
+## Best Practices
+
+- Use DTOs
+- Keep controllers thin
+- Business logic in services
+- Use enums
+- Global exception handling
+
+---
+
+## Build Order
+
+1. Auth module
+2. User module
+3. Property module
+4. Issue module
+5. Notification module
