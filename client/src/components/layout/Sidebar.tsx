@@ -31,8 +31,10 @@ export function Sidebar() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
   const handleLogout = () => {
+    localStorage.removeItem('tenaco_token');
+    localStorage.removeItem('tenaco_user');
     logout();
-    router.push('/login');
+    router.replace('/login');
   };
 
   return (
@@ -125,6 +127,13 @@ export function Sidebar() {
               </Link>
             );
           })}
+          <button
+            onClick={handleLogout}
+            className="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg text-[11px] font-medium text-gray-400"
+          >
+            <LogOut className="w-5 h-5" />
+            Logout
+          </button>
         </div>
       </div>
     </>

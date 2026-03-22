@@ -10,7 +10,8 @@ const PUBLIC_PATHS = ['/', '/login', '/register'];
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { token, hydrate } = useAppStore();
+  const token = useAppStore((s) => s.token);
+  const hydrate = useAppStore((s) => s.hydrate);
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
@@ -22,10 +23,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     if (!checked) return;
 
     const isPublic = PUBLIC_PATHS.includes(pathname);
-    const storedToken = typeof window !== 'undefined' ? localStorage.getItem('tenaco_token') : null;
-    const isAuthenticated = !!token || !!storedToken;
 
-    if (!isPublic && !isAuthenticated) {
+    if (!isPublic && !token) {
       router.replace('/login');
     }
   }, [checked, token, pathname, router]);
@@ -39,10 +38,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   const isPublic = PUBLIC_PATHS.includes(pathname);
-  const storedToken = typeof window !== 'undefined' ? localStorage.getItem('tenaco_token') : null;
-  const isAuthenticated = !!token || !!storedToken;
 
-  if (!isPublic && !isAuthenticated) {
+  if (!isPublic && !token) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
