@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Next.js
+client/.next/
+client/out/
+
+# Build
+backend/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Uploads
+backend/uploads/
+
+# Claude
+.claude/
