@@ -11,7 +11,7 @@
 7. **Manage Issues** (`/issues`) — See all issues reported by tenants across all properties, filter by status
 8. **Update Issue Status** (`/issues/[id]`) — View issue details, change status: Open → In Progress → Resolved → Closed (tenant gets email notification)
 9. **Settings** (`/settings`) — Update profile name/email, change password
-10. **Logout** — Bottom nav or sidebar → clears session, back to login
+10. **Logout** — Bottom nav or sidebar → clears session, back to login.
 
 ## Tenant Flow
 
