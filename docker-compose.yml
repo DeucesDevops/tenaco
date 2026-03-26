@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tenaco_user
+      POSTGRES_PASSWORD: tenaco_password
+      POSTGRES_DB: tenaco
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenaco_user -d tenaco"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/tenaco
+      DB_USERNAME: tenaco_user
+      DB_PASSWORD: tenaco_password
+      JWT_SECRET: local-dev-jwt-secret-key-at-least-256-bits-long-for-hs256
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      MAIL_USERNAME: ""
+      MAIL_PASSWORD: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        BACKEND_URL: http://backend:8080
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

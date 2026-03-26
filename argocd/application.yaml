@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ArgoCD Application — tells ArgoCD what repo to watch and where to deploy
+#
+# SETUP (one time per cluster):
+#   1. Install ArgoCD:
+#      kubectl create namespace argocd
+#      kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+#
+#   2. Get the initial admin password:
+#      kubectl -n argocd get secret argocd-initial-admin-secret \
+#        -o jsonpath="{.data.password}" | base64 -d
+#
+#   3. Apply this manifest:
+#      kubectl apply -f argocd/application.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenaco
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/DeucesDevops/tenaco.git
+    targetRevision: main
+    path: k8s
+    kustomize: {}
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tenaco
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

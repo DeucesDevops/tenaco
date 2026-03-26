@@ -1,0 +1,512 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Observability stack for Tenaco
+#
+# Includes:
+#   - Prometheus  — scrapes /actuator/prometheus on the backend pod
+#   - Alertmanager — routes alerts to Slack
+#   - Grafana     — pre-provisioned dashboards (HTTP + JVM)
+#
+# Access (after kubectl port-forward):
+#   Prometheus:   kubectl port-forward svc/prometheus   -n tenaco 9090:9090
+#   Grafana:      kubectl port-forward svc/grafana       -n tenaco 3001:3000
+#   Alertmanager: kubectl port-forward svc/alertmanager  -n tenaco 9093:9093
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data-pvc
+  namespace: tenaco
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: tenaco
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Scrape Spring Boot Actuator metrics
+      - job_name: tenaco-backend
+        metrics_path: /actuator/prometheus
+        static_configs:
+          - targets: ['backend:8080']
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: tenaco
+data:
+  tenaco-rules.yml: |
+    groups:
+      - name: tenaco.availability
+        interval: 15s
+        rules:
+          - alert: BackendDown
+            expr: up{job="tenaco-backend"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Tenaco backend is unreachable"
+              description: "The backend pod has been unreachable for more than 2 minutes."
+
+          - alert: HighRestartRate
+            expr: rate(kube_pod_container_status_restarts_total{namespace="tenaco"}[15m]) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.pod }} is restarting frequently"
+              description: "{{ $labels.pod }} has restarted more than once in the last 15 minutes."
+
+      - name: tenaco.performance
+        interval: 30s
+        rules:
+          - alert: HighHttpErrorRate
+            expr: |
+              rate(http_server_requests_seconds_count{job="tenaco-backend",status=~"5.."}[5m])
+              /
+              rate(http_server_requests_seconds_count{job="tenaco-backend"}[5m])
+              > 0.05
+            for: 3m
+            labels:
+              severity: critical
+            annotations:
+              summary: "High HTTP error rate on Tenaco backend"
+              description: "More than 5% of requests are returning 5xx errors."
+
+          - alert: HighP95Latency
+            expr: |
+              histogram_quantile(0.95,
+                rate(http_server_requests_seconds_bucket{job="tenaco-backend"}[5m])
+              ) > 2
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High p95 latency on Tenaco backend"
+              description: "95th percentile response time is above 2 seconds."
+
+      - name: tenaco.jvm
+        interval: 30s
+        rules:
+          - alert: HighJvmHeapUsage
+            expr: |
+              jvm_memory_used_bytes{job="tenaco-backend",area="heap"}
+              /
+              jvm_memory_max_bytes{job="tenaco-backend",area="heap"}
+              > 0.85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "JVM heap above 85%"
+              description: "Consider increasing memory limits or investigating memory leaks."
+
+          - alert: HighGcPause
+            expr: |
+              rate(jvm_gc_pause_seconds_sum{job="tenaco-backend"}[5m])
+              /
+              rate(jvm_gc_pause_seconds_count{job="tenaco-backend"}[5m])
+              > 0.5
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High GC pause time on Tenaco backend"
+              description: "Average GC pause above 500ms — possible memory pressure."
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: tenaco
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.48.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.retention.time=15d"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "500m", memory: "1Gi" }
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: data
+          persistentVolumeClaim:
+            claimName: prometheus-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: tenaco
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+  type: ClusterIP
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-secrets
+  namespace: tenaco
+type: Opaque
+stringData:
+  slack-webhook-url: "https://hooks.slack.com/services/REPLACE_ME"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: tenaco
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: slack-notifications
+      group_by: [alertname]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    receivers:
+      - name: slack-notifications
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
+            channel: '#tenaco-alerts'
+            send_resolved: true
+            title: '{{ if eq .Status "firing" }}🔴{{ else }}✅{{ end }} {{ .CommonAnnotations.summary }}'
+            text: |
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}  |  *Severity:* {{ .Labels.severity }}
+              {{ .Annotations.description }}
+              {{ end }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: tenaco
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+          ports:
+            - containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: secrets
+              mountPath: /etc/alertmanager/secrets
+              readOnly: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "100m", memory: "128Mi" }
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: secrets
+          secret:
+            secretName: alertmanager-secrets
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: tenaco
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - port: 9093
+      targetPort: 9093
+  type: ClusterIP
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: tenaco
+data:
+  prometheus-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        access: proxy
+        isDefault: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: tenaco
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: tenaco-dashboards
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-http
+  namespace: tenaco
+data:
+  http-overview.json: |
+    {
+      "title": "Tenaco — HTTP Overview",
+      "uid": "tenaco-http",
+      "tags": ["tenaco"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate (req/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "sum(rate(http_server_requests_seconds_count{job='tenaco-backend'}[5m])) by (uri)", "legendFormat": "{{uri}}"}]
+        },
+        {
+          "id": 2,
+          "title": "Error Rate (%)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "sum(rate(http_server_requests_seconds_count{job='tenaco-backend',status=~'5..'}[5m])) / sum(rate(http_server_requests_seconds_count{job='tenaco-backend'}[5m])) * 100", "legendFormat": "5xx error rate %"}]
+        },
+        {
+          "id": 3,
+          "title": "p50 / p95 / p99 Latency (s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": "Prometheus",
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(http_server_requests_seconds_bucket{job='tenaco-backend'}[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{job='tenaco-backend'}[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(http_server_requests_seconds_bucket{job='tenaco-backend'}[5m]))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Backend Up",
+          "type": "stat",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "up{job='tenaco-backend'}", "legendFormat": "backend"}],
+          "options": {
+            "colorMode": "background",
+            "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}
+          }
+        }
+      ]
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-jvm
+  namespace: tenaco
+data:
+  jvm-overview.json: |
+    {
+      "title": "Tenaco — JVM Runtime",
+      "uid": "tenaco-jvm",
+      "tags": ["tenaco", "jvm"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Heap Used (bytes)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "jvm_memory_used_bytes{job='tenaco-backend',area='heap'}", "legendFormat": "heap used"}]
+        },
+        {
+          "id": 2,
+          "title": "Heap Usage (%)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "jvm_memory_used_bytes{job='tenaco-backend',area='heap'} / jvm_memory_max_bytes{job='tenaco-backend',area='heap'} * 100", "legendFormat": "heap %"}]
+        },
+        {
+          "id": 3,
+          "title": "GC Pause Time (s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": "Prometheus",
+          "targets": [{"expr": "rate(jvm_gc_pause_seconds_sum{job='tenaco-backend'}[5m])", "legendFormat": "gc pause rate"}]
+        },
+        {
+          "id": 4,
+          "title": "Active Threads",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "datasource": "Prometheus",
+          "targets": [
+            {"expr": "jvm_threads_live_threads{job='tenaco-backend'}", "legendFormat": "live threads"},
+            {"expr": "jvm_threads_daemon_threads{job='tenaco-backend'}", "legendFormat": "daemon threads"}
+          ]
+        }
+      ]
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: tenaco
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.2.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboard-http
+              mountPath: /var/lib/grafana/dashboards/http-overview.json
+              subPath: http-overview.json
+            - name: dashboard-jvm
+              mountPath: /var/lib/grafana/dashboards/jvm-overview.json
+              subPath: jvm-overview.json
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "300m", memory: "512Mi" }
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboard-http
+          configMap:
+            name: grafana-dashboard-http
+        - name: dashboard-jvm
+          configMap:
+            name: grafana-dashboard-jvm
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: tenaco
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP

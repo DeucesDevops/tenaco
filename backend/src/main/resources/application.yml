@@ -3,9 +3,9 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://ep-tiny-wind-adcromso.c-2.us-east-1.aws.neon.tech/tenaco?sslmode=require
-    username: neondb_owner
-    password: npg_4KIAYLEWRme7
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/tenaco}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 5
@@ -42,13 +42,25 @@ spring:
       max-file-size: 10MB
       max-request-size: 10MB
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: tenaco
+
 app:
   jwt:
-    secret: tenaco-jwt-secret-key-that-is-at-least-256-bits-long-for-hs256-algorithm
+    secret: ${JWT_SECRET:tenaco-jwt-secret-key-that-is-at-least-256-bits-long-for-hs256-algorithm}
     expiration-ms: 86400000  # 24 hours
 
   cors:
-    allowed-origins: http://localhost:3000
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
 
   upload:
-    dir: ./uploads
+    dir: ${UPLOAD_DIR:./uploads}
